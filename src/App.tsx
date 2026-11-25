@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight,
-  Clock3, ExternalLink, LockKeyhole, LogOut, Plus, ShieldCheck, Sparkles, Trash2, X,
+  Clock3, ExternalLink, LockKeyhole, LogOut, Plus, Repeat2, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react'
 import { type Activity, type ActivityColor, type ActivityInput, COLORS, validateActivity } from './lib/activities'
 import { activitiesRepository, errorMessage, isConfigured, supabase } from './lib/data'
@@ -17,7 +17,7 @@ function ActivityCard({ activity, onEdit, onDelete }: {
   return (
     <article className={`activity-card color-${activity.color}`}>
       <div className="activity-topline">
-        <span className="activity-type"><span className="type-dot" />{COLORS[activity.color]?.label ?? 'Actividad'}</span>
+        <span className="activity-type"><span className="type-dot" />{COLORS[activity.color]?.label ?? 'Actividad'}{activity.series_id && <span className="weekly-tag" title="Actividad semanal"><Repeat2 size={11} /> Semanal</span>}</span>
         {onEdit && onDelete && (
           <div className="card-actions">
             <button type="button" className="icon-action" onClick={() => onEdit(activity)} aria-label={`Editar ${activity.title}`} title="Editar">✎</button>
@@ -123,13 +123,23 @@ function emptyInput(date: string): ActivityInput {
   return { activity_date: date, start_time: '09:00', end_time: '10:00', title: '', description: null, link: '', color: 'aqua' }
 }
 
+function activityFields(item: ActivityInput): ActivityInput {
+  return {
+    activity_date: item.activity_date, start_time: item.start_time, end_time: item.end_time,
+    title: item.title, description: item.description, link: item.link, color: item.color,
+  }
+}
+
 function ActivityForm({ date, editing, onClose, onSaved }: {
   date: string
   editing: Activity | null
   onClose: () => void
   onSaved: () => void
 }) {
-  const [input, setInput] = useState<ActivityInput>(() => editing ? { ...editing } : emptyInput(date))
+  const [input, setInput] = useState<ActivityInput>(() => editing ? activityFields(editing) : emptyInput(date))
+  const [scope, setScope] = useState<'date' | 'series'>('date')
+  const [until, setUntil] = useState('')
+  const [fetching, setFetching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -155,15 +165,42 @@ function ActivityForm({ date, editing, onClose, onSaved }: {
     setInput((previous) => ({ ...previous, [key]: value }))
     setError(null)
   }
+  async function changeScope(value: 'date' | 'series') {
+    if (value === 'date') {
+      setScope(value)
+      setInput(editing ? activityFields(editing) : emptyInput(date))
+      setError(null)
+      return
+    }
+    if (editing?.series_id) {
+      setFetching(true)
+      try {
+        const loaded = await activitiesRepository.getSeries(editing.series_id)
+        setUntil(loaded.until_date ?? '')
+        setInput(activityFields({ ...loaded, activity_date: loaded.start_date }))
+        setScope(value)
+        setError(null)
+      } catch (cause) { setError(`No se pudo cargar la serie. ${errorMessage(cause)}`) }
+      finally { setFetching(false) }
+    } else setScope(value)
+  }
   async function submit(event: FormEvent) {
     event.preventDefault()
     const payload = { ...input, title: input.title.trim(), description: input.description?.trim() || null, link: input.link.trim() }
     const validation = validateActivity(payload)
     if (validation) { setError(validation); return }
+    if (scope === 'series' && until && (validateDate(until) === false || until < payload.activity_date)) {
+      setError('La fecha de fin debe ser válida y no anterior al inicio.')
+      return
+    }
     setSaving(true)
     setError(null)
     try {
-      if (editing) await activitiesRepository.update(editing.id, payload)
+      if (editing?.series_id) {
+        if (scope === 'series') await activitiesRepository.updateSeries(editing.series_id, payload, until || null)
+        else await activitiesRepository.saveOccurrence(editing, payload)
+      } else if (editing) await activitiesRepository.update(editing.id, payload)
+      else if (scope === 'series') await activitiesRepository.createSeries(payload, until || null)
       else await activitiesRepository.create(payload)
       onSaved()
     } catch (cause) {
@@ -182,10 +219,17 @@ function ActivityForm({ date, editing, onClose, onSaved }: {
         <form onSubmit={submit}>
           <label htmlFor="activity-title">Título <span className="required">*</span></label>
           <input id="activity-title" required maxLength={160} value={input.title} onChange={(event) => update('title', event.target.value)} placeholder="Nombre de la actividad" />
+          <fieldset className="scope-options">
+            <legend>{editing?.series_id ? '¿Qué quieres editar?' : 'Repetición'}</legend>
+            <label><input type="radio" name="scope" checked={scope === 'date'} onChange={() => { void changeScope('date') }} /> Solo esta fecha</label>
+            <label><input type="radio" name="scope" checked={scope === 'series'} onChange={() => { void changeScope('series') }} /> {editing?.series_id ? 'Toda la serie' : 'Repetir cada semana'}</label>
+          </fieldset>
+          {scope === 'series' && <p className="input-help">Se repetirá el mismo día de la semana desde la fecha de inicio, a la misma hora de Madrid.{editing && ' Las excepciones existentes se conservarán.'}</p>}
           <div className="form-row">
-            <div><label htmlFor="activity-date">Fecha <span className="required">*</span></label><input id="activity-date" type="date" required value={input.activity_date} onChange={(event) => update('activity_date', event.target.value)} /></div>
+            <div><label htmlFor="activity-date">{scope === 'series' ? 'Fecha de inicio' : 'Fecha'} <span className="required">*</span></label><input id="activity-date" type="date" required value={input.activity_date} disabled={Boolean(editing?.series_id && scope === 'series')} onChange={(event) => update('activity_date', event.target.value)} /></div>
             <div><label htmlFor="activity-color">Color</label><select id="activity-color" value={input.color} onChange={(event) => update('color', event.target.value as ActivityColor)}>{Object.entries(COLORS).map(([key, color]) => <option key={key} value={key}>{color.name}</option>)}</select></div>
           </div>
+          {scope === 'series' && <><label htmlFor="activity-until">Fecha de fin <span className="optional">(opcional)</span></label><input id="activity-until" type="date" min={input.activity_date} value={until} onChange={(event) => setUntil(event.target.value)} /><p className="input-help">Sin fecha de fin, se repetirá hasta que elimines la serie.</p></>}
           <div className="form-row">
             <div><label htmlFor="activity-start">Hora de inicio <span className="required">*</span></label><input id="activity-start" type="time" required value={displayTime(input.start_time)} onChange={(event) => update('start_time', event.target.value)} /></div>
             <div><label htmlFor="activity-end">Hora de fin <span className="required">*</span></label><input id="activity-end" type="time" required value={displayTime(input.end_time)} onChange={(event) => update('end_time', event.target.value)} /></div>
@@ -198,12 +242,49 @@ function ActivityForm({ date, editing, onClose, onSaved }: {
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="form-footer">
             <button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button>
-            <button type="submit" className="button button-primary" disabled={saving}>{saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Crear actividad'} <Check size={17} /></button>
+            <button type="submit" className="button button-primary" disabled={saving || fetching}>{saving ? 'Guardando…' : fetching ? 'Cargando…' : editing ? 'Guardar cambios' : 'Crear actividad'} <Check size={17} /></button>
           </div>
         </form>
       </div>
     </div>
   )
+}
+
+function validateDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T12:00:00Z`)) &&
+    new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value
+}
+
+function DeleteDialog({ activity, onClose, onDeleted }: {
+  activity: Activity; onClose: () => void; onDeleted: () => void
+}) {
+  const [scope, setScope] = useState<'date' | 'series'>('date')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  async function remove() {
+    setBusy(true)
+    try {
+      if (activity.series_id) {
+        if (scope === 'series') await activitiesRepository.removeSeries(activity.series_id)
+        else await activitiesRepository.saveOccurrence(activity, null)
+      } else await activitiesRepository.remove(activity.id)
+      onDeleted()
+    } catch (cause) { setError(`No se eliminó la actividad. ${errorMessage(cause)}`) }
+    finally { setBusy(false) }
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <div className="modal delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div className="modal-heading"><h2 id="delete-title">Eliminar actividad</h2><button type="button" className="close-button" onClick={onClose} aria-label="Cerrar"><X size={20} /></button></div>
+      <p>¿Eliminar «{activity.title}» del {readableDate(activity.activity_date)}? Esta acción no se puede deshacer.</p>
+      {activity.series_id && <fieldset className="scope-options"><legend>¿Qué quieres eliminar?</legend>
+        <label><input type="radio" name="delete-scope" checked={scope === 'date'} onChange={() => setScope('date')} /> Solo esta fecha</label>
+        <label><input type="radio" name="delete-scope" checked={scope === 'series'} onChange={() => setScope('series')} /> Toda la serie</label>
+      </fieldset>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="form-footer"><button className="button button-quiet" onClick={onClose} disabled={busy}>Cancelar</button><button className="button button-danger" onClick={() => { void remove() }} disabled={busy}>{busy ? 'Eliminando…' : 'Eliminar'} <Trash2 size={16} /></button></div>
+    </div>
+  </div>
 }
 
 export function App() {
@@ -218,6 +299,7 @@ export function App() {
   const [authError, setAuthError] = useState<string | null>(null)
   const [adminEmail, setAdminEmail] = useState('')
   const [form, setForm] = useState<{ date: string; editing: Activity | null } | null>(null)
+  const [deleting, setDeleting] = useState<Activity | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -298,17 +380,6 @@ export function App() {
     else { setAdmin(false); setForm(null) }
   }
 
-  async function remove(activity: Activity) {
-    if (!window.confirm(`¿Eliminar «${activity.title}» del ${readableDate(activity.activity_date)}? Esta acción no se puede deshacer.`)) return
-    setActionError(null)
-    try {
-      await activitiesRepository.remove(activity.id)
-      setRevision((value) => value + 1)
-    } catch (cause) {
-      setActionError(`No se eliminó la actividad. ${errorMessage(cause)}`)
-    }
-  }
-
   const canEdit = isAdminRoute && admin && isConfigured
   return (
     <div className="site-shell">
@@ -359,14 +430,15 @@ export function App() {
                 <button type="button" className="nav-arrow" onClick={() => setMonday((date) => shiftDate(date, 7))} aria-label="Semana siguiente"><ChevronRight size={20} /></button>
               </div>
             </div>
-            <Calendar monday={monday} activities={activities} loading={loading} error={loadError} admin={canEdit} onEdit={(activity) => setForm({ date: activity.activity_date, editing: activity })} onDelete={(activity) => { void remove(activity) }} onAdd={(date) => setForm({ date, editing: null })} />
+             <Calendar monday={monday} activities={activities} loading={loading} error={loadError} admin={canEdit} onEdit={(activity) => setForm({ date: activity.activity_date, editing: activity })} onDelete={setDeleting} onAdd={(date) => setForm({ date, editing: null })} />
             {canEdit && <button type="button" className="button button-primary floating-add" onClick={() => setForm({ date: todayInMadrid(), editing: null })}><Plus size={18} /> Nueva actividad</button>}
             <div className="after-calendar"><span><span className="legend-dot" /> Horarios en Europe/Madrid</span><span>Una semana para seguir creciendo <ExternalLink size={14} /></span></div>
           </>
         )}
       </main>
       <footer className="footer"><span className="footer-brand">ASR <span>/</span> INMOVERSE</span><span>Calendario semanal · Formaciones y presentaciones</span><span>Hecho para estar al día.</span></footer>
-      {canEdit && form && <ActivityForm key={form.editing?.id ?? `new-${form.date}`} date={form.date} editing={form.editing} onClose={() => setForm(null)} onSaved={() => { setForm(null); setRevision((value) => value + 1) }} />}
+       {canEdit && form && <ActivityForm key={form.editing?.id ?? `new-${form.date}`} date={form.date} editing={form.editing} onClose={() => setForm(null)} onSaved={() => { setForm(null); setRevision((value) => value + 1) }} />}
+       {canEdit && deleting && <DeleteDialog activity={deleting} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setRevision((value) => value + 1) }} />}
     </div>
   )
 }

@@ -41,7 +41,7 @@ Tras configurar Supabase: accede a `/admin` con la cuenta autorizada; añade una
 
 ## Despliegue posterior (no se publica automáticamente)
 
-En Cloudflare Pages configura **Build command:** `npm run build`, **Build output directory:** `dist`; añade `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` como variables de entorno públicas. `public/_redirects` permite entrar directamente en `/admin`. Crea las mismas variables para Preview y Production según corresponda. En Supabase Authentication → URL Configuration, configura la URL del sitio al desplegar (para flujos de correo futuros). No hay pagos, reservas, chat, notificaciones ni registro público.
+En Cloudflare Pages configura **Build command:** `npm run build`, **Build output directory:** `dist`; añade `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` como variables de entorno públicas. `public/_redirects` reescribe `/admin` a `/` con estado 200: no debe apuntar a `/index.html`, ya que Pages canoniza esa URL redirigiéndola a `/` (308) y pierde la ruta de administración. Crea las mismas variables para Preview y Production según corresponda. En Supabase Authentication → URL Configuration, configura la URL del sitio al desplegar (para flujos de correo futuros). No hay pagos, reservas, chat, notificaciones ni registro público.
 
 ## Estructura
 
@@ -52,3 +52,11 @@ En Cloudflare Pages configura **Build command:** `npm run build`, **Build output
 - `supabase/migrations/`: esquema, privilegios y políticas RLS.
 
 **Pendiente de verificación con el proyecto conectado:** ejecución efectiva de la migración, acceso con la cuenta administradora, persistencia entre dispositivos, denegación RLS a usuarios no autorizados y configuración de Cloudflare Pages. Una compilación local sin credenciales no demuestra ninguna de esas operaciones.
+
+## Repetición semanal (migración pendiente)
+
+Si ya ejecutaste la migración inicial, **no la vuelvas a ejecutar ni la modifiques**. Ejecuta únicamente `supabase/migrations/20261125000001_weekly_activities.sql` en el SQL Editor de tu proyecto Supabase, una vez y antes de usar la nueva versión de la web. No hace falta copiar ni transformar las actividades existentes: permanecen en `public.activities` como citas únicas. La migración crea `public.weekly_series` y `public.weekly_exceptions`, con lectura pública y escritura limitada por RLS a `public.is_admin()`. No se ha ejecutado remotamente desde este repositorio.
+
+Al crear se puede elegir una fecha única o repetición semanal, con fin inclusivo opcional. En citas semanales, editar/eliminar ofrece una fecha o toda la serie; los cambios puntuales se guardan como excepciones y sobreviven a los cambios posteriores de la serie. Para preservar la correspondencia de las excepciones, la fecha inicial de una serie existente se muestra fija al editar toda la serie; se pueden modificar los demás datos y la fecha de fin. Las horas son horas civiles de Madrid, sin convertirlas a UTC.
+
+Después de ejecutar el SQL, conviene comprobar manualmente con Supabase: inicio/fin y cambio de hora; una edición y eliminación puntual; edición y eliminación de la serie; lectura anónima y denegación de escrituras anónimas y de usuarios autenticados no administradores en **ambas** tablas. Las pruebas locales y la compilación no sustituyen esta comprobación de RLS.
